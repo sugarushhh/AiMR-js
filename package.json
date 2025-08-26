@@ -1,7 +1,7 @@
-// package.json
 {
   "name": "aimr-js",
   "version": "1.0.0",
+  "description": "AiMR project using Node.js, Supabase, and NeteaseCloudMusicApi",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
