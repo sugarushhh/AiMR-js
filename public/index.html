@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>AiMR 网易云导入</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+      color: #fff;
+      padding-top: 50px;
+    }
+    #qr img {
+      width: 200px;
+      height: 200px;
+      margin: 20px 0;
+    }
+    button {
+      padding: 10px 20px;
+      border-radius: 25px;
+      border: none;
+      background-color: #fff;
+      color: #4facfe;
+      font-size: 16px;
+      cursor: pointer;
+      transition: 0.3s;
+    }
+    button:hover {
+      background-color: #e0e0e0;
+    }
+  </style>
+</head>
+<body>
+  <h1>AiMR 网易云导入</h1>
+  <p>请扫描二维码登录网易云账号</p>
+
+  <div id="qr">
+    <img id="qr-img" src="" alt="二维码加载中...">
+  </div>
+  <p id="status">状态：等待扫码</p>
+  <button id="import-btn" disabled>导入我的喜欢音乐</button>
+
+  <script>
+    let qrKey = '';
+    let userCookie = '';
+
+    async function fetchQRCode() {
+      const res = await fetch('/login/qr');
+      const data = await res.json();
+      qrKey = data.key;
+      document.getElementById('qr-img').src = data.img;
+      pollQRCode();
+    }
+
+    async function pollQRCode() {
+      const interval = setInterval(async () => {
+        const res = await fetch(`/login/check?key=${qrKey}`);
+        const data = await res.json();
+
+        const statusEl = document.getElementById('status');
+        if (data.status === 'pending') {
+          statusEl.textContent = '状态：等待扫码或确认';
+        } else if (data.status === 'expired') {
+          statusEl.textContent = '状态：二维码已过期，刷新页面重试';
+          clearInterval(interval);
+        } else if (data.status === 'logged') {
+          statusEl.textContent = '状态：登录成功！';
+          userCookie = data.cookie;
+          document.getElementById('import-btn').disabled = false;
+          clearInterval(interval);
+        }
+      }, 2000);
+    }
+
+    document.getElementById('import-btn').addEventListener('click', async () => {
+      if (!userCookie) return;
+      const res = await fetch('/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cookie: userCookie })
+      });
+      const text = await res.text();
+      alert(text);
+    });
+
+    fetchQRCode();
+  </script>
+</body>
+</html>
