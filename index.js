@@ -1,17 +1,14 @@
-// index.js
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const puppeteer = require('puppeteer');
 const {
-  login_qr_key,
-  login_qr_create,
-  login_qr_check,
   likelist,
   user_record,
   artist_sublist,
   user_account
 } = require('NeteaseCloudMusicApi');
-const bodyParser = require('body-parser');
-const cors = require('cors');
 
 const app = express();
 app.use(cors());
@@ -22,56 +19,52 @@ app.use(bodyParser.json());
 const supabase = createClient(
   process.env.SUPABASE_URL || 'https://eiyaloehytwaralfqsrk.supabase.co',
   process.env.SUPABASE_KEY ||
-    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpeWFsb2VoeXR3YXJhbGZxc3JrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUxMzk1MzYsImV4cCI6MjA3MDcxNTUzNn0.t6E4Ps8qRsukYJUFUJ7ZTuc3nmn0SeKlSFIUi2QcVKk'
+    'YOUR_PUBLIC_KEY'
 );
 
-// 获取二维码
-app.get('/login/qr', async (req, res) => {
-  try {
-    const keyRes = await login_qr_key({});
-    const key = keyRes.body.data.unikey;
+// Puppeteer 全局存储登录实例
+let loginBrowser;
+let loginPage;
 
-    const qrRes = await login_qr_create({ key, qrimg: 1 });
-    res.json({ key, img: qrRes.body.data.qrimg });
-  } catch (error) {
-    console.error(error);
-    res.status(500).send('无法获取二维码');
+// 访问 /login 打开官方网易云登录页面
+app.get('/login', async (req, res) => {
+  try {
+    loginBrowser = await puppeteer.launch({
+      headless: false, // 可视化，用户扫码或输入密码
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+    loginPage = await loginBrowser.newPage();
+    await loginPage.goto('https://music.163.com/login', { waitUntil: 'networkidle2' });
+
+    // 提示前端页面
+    res.send(`
+      <h2>请在弹出的网易云音乐窗口完成登录，然后点击下面按钮提交 MUSIC_U</h2>
+      <button onclick="fetch('/fetch-cookie').then(res => res.json()).then(d => alert('MUSIC_U 已提交'))">提交 MUSIC_U</button>
+    `);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('打开登录页面失败');
   }
 });
 
-// 检查扫码状态
-app.get('/login/check', async (req, res) => {
-  const key = req.query.key;
-  if (!key) return res.status(400).send('缺少 key');
+// 获取 MUSIC_U 并导入数据
+app.get('/fetch-cookie', async (req, res) => {
   try {
-    const result = await login_qr_check({ key });
-    if (result.body.code === 800) {
-      return res.json({ status: 'expired' });
-    } else if (result.body.code === 803) {
-      const cookie = result.body.cookie;
-      return res.json({ status: 'logged', cookie });
-    } else {
-      return res.json({ status: 'pending' });
-    }
-  } catch (error) {
-    console.error(error);
-    res.status(500).send('扫码状态检查失败');
-  }
-});
+    if (!loginPage) return res.status(400).send({ error: '登录页面未初始化' });
 
-// 导入用户数据
-app.post('/import', async (req, res) => {
-  const cookie = req.body.cookie;
-  if (!cookie) return res.status(400).send('缺少 cookie');
+    // 获取 cookie
+    const cookies = await loginPage.cookies();
+    const musicUCookie = cookies.find(c => c.name === 'MUSIC_U');
+    if (!musicUCookie) throw new Error('未获取到 MUSIC_U');
+    const cookieValue = `MUSIC_U=${musicUCookie.value};`;
 
-  try {
-    // 获取用户账户信息
-    const accountRes = await user_account({ cookie });
+    // 使用 NeteaseCloudMusicApi 获取用户信息
+    const accountRes = await user_account({ cookie: cookieValue });
     const profile = accountRes.body.profile;
     const userId = profile.userId;
 
     // 喜欢的歌曲
-    const likeRes = await likelist({ cookie, uid: userId });
+    const likeRes = await likelist({ cookie: cookieValue, uid: userId });
     const likedSongs = likeRes.body.ids || [];
     if (likedSongs.length) {
       const rows = likedSongs.map(id => ({
@@ -82,7 +75,7 @@ app.post('/import', async (req, res) => {
     }
 
     // 播放记录
-    const recordRes = await user_record({ cookie, uid: userId, type: 1 });
+    const recordRes = await user_record({ cookie: cookieValue, uid: userId, type: 1 });
     const records = recordRes.body.allData || [];
     if (records.length) {
       const rows = records.map(r => ({
@@ -94,7 +87,7 @@ app.post('/import', async (req, res) => {
     }
 
     // 关注的歌手
-    const artistsRes = await artist_sublist({ cookie, limit: 100, offset: 0 });
+    const artistsRes = await artist_sublist({ cookie: cookieValue, limit: 100, offset: 0 });
     const artists = artistsRes.body.data || [];
     if (artists.length) {
       const rows = artists.map(a => ({
@@ -108,13 +101,18 @@ app.post('/import', async (req, res) => {
     await supabase.from('netease_accounts').insert({
       netease_user_id: userId,
       netease_username: profile.nickname,
-      cookie
+      cookie: cookieValue
     });
 
-    res.send('导入完成');
-  } catch (error) {
-    console.error('导入失败:', error);
-    res.status(500).send('数据导入失败');
+    // 关闭浏览器
+    await loginBrowser.close();
+    loginBrowser = null;
+    loginPage = null;
+
+    res.json({ message: '导入完成', musicU: musicUCookie.value });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ error: err.message });
   }
 });
 
